@@ -1,0 +1,5 @@
+CONTINOUS_COLUMNS = ["V1", "V2", "V3", "V4", "V5", "V6", "V7"]
+
+BELL_CURVE_TYPE_COLUMNS = ["V4", "V6"]
+
+NOT_BELL_CURVE_TYPE_COLUMNS = ["V1", "V2", "V3", "V5", "V7"]

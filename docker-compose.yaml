@@ -1,0 +1,85 @@
+services:
+  flask-app:
+    build: ./flask_docker
+    container_name: flask-application
+    ports:
+      - "8080:8080"
+    networks:
+      - mlsecops_network    
+
+  mlflow:
+    build:
+      context: ./mlflow_docker
+      dockerfile: Dockerfile
+    container_name: mlflow-server
+    ports:
+      - "5102:5102"
+    volumes:
+      - ./mlflow_docker/mlruns:/app/mlruns
+      - ./mlflow_docker/mlartifacts:/app/mlartifacts
+    environment:
+      - MLFLOW_TRACKING_URI=file:/app/mlruns
+    networks:
+      - mlsecops_network 
+
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+    networks:
+      - mlsecops_network
+
+  airflow-init:
+    image: apache/airflow:2.10.5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__FERNET_KEY=1eJTwJ6WFnF8N-JtmvjTzDOfLb65sOOQ4zviEq5S6cg=
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    volumes:
+      - ./airflow_docker/dags:/opt/airflow/dags
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password Admin1234
+      "
+    networks:
+      - mlsecops_network
+
+  airflow:
+    build: ./airflow_docker
+    container_name: airflow
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__FERNET_KEY=1eJTwJ6WFnF8N-JtmvjTzDOfLb65sOOQ4zviEq5S6cg=
+      - AIRFLOW__WEBSERVER__SECRET_KEY=xJXQwLZ2xjcdxOTZAx9kgAqWgbrI78lwepCPtwx8vnY
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+    volumes:
+      - ./airflow_docker/dags:/opt/airflow/dags
+    ports:
+      - "8090:8080"
+    command: >
+      bash -c "airflow scheduler & airflow webserver"
+    networks:
+      - mlsecops_network
+
+volumes:
+  postgres-db-volume:
+
+networks:
+  mlsecops_network:

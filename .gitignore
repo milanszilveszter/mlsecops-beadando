@@ -1,0 +1,7 @@
+.vscode/
+__pycache__/
+venv
+mlflow_docker/mlartifacts/*
+!mlflow_docker/mlartifacts/.gitkeep
+mlflow_docker/mlruns/*
+!mlflow_docker/mlruns/.gitkeep
