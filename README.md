@@ -1,6 +1,5 @@
 # MLSecOps beadandó (2024/25/2)
 **Készítette:** Szilveszter Milán <br>
-**Neptun:** CZZYLG
 
 ## Könyvtárak és fileok
 1. <code>train_pipeline.ipynb</code>
@@ -24,9 +23,11 @@
 <code>docker compose up --build -d</code>
 
 ## Elérési útvonalak
-**Flask:** <code>https://localhost:8080</code><br>
-**MLflow:** <code>https://localhost:5102</code><br>
-**Airflow:** <code>https://localhost:8090</code>
+- **Flask:** <code>https://localhost:8080</code><br>
+- **MLflow:** <code>https://localhost:5102</code><br>
+- **Airflow:** <code>https://localhost:8090</code><br>
+    - **User:** admin
+    - **Password:** Admin1234
 
 ## További parancsok
 ### Streamlit dashboard:
