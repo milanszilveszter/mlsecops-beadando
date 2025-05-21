@@ -9,154 +9,171 @@ from mlflow import MlflowClient
 from datetime import datetime
 from mlflow.exceptions import MlflowException
 
-# Set MLflow tracking URI
-mlflow.set_tracking_uri("http://mlflow:5102") # http://127.0.0.1:5102
-
-# Set default experiment
+# Configure MLflow tracking
+mlflow.set_tracking_uri("http://mlflow:5102")
 experiment_name = "default_experiment"
 if not mlflow.get_experiment_by_name(experiment_name):
     mlflow.create_experiment(experiment_name)
 mlflow.set_experiment(experiment_name)
 
 app = Flask(__name__)
-api = Api(app, version='1.0', title='API Documentation')
+api = Api(app, version='1.0', title='API Documentation',
+          description='Machine Learning Model Management API')
 
 @app.route("/hello")
 def hello():
+    """Health check endpoint to verify service availability.
+    
+    Returns:
+        str: Simple confirmation message
+    """
     return "Flask is running!"
 
 @app.before_request
 def log_every_request():
+    """Log details for every incoming request.
+    
+    Prints:
+        Request method, path, and client IP address
+    """
     print(f"📥 {request.method} {request.path} from {request.remote_addr}")
 
+# Initialize MLflow client and model
 client = MlflowClient()
 
-# Attempt to load the latest "Staging" model version if it exists
 try:
     obj_mlmodel = MLModel(client=client)
     if obj_mlmodel.model is None:
-        print("""⚠️  Warning: No 'Staging' model found. 
-              Training is still possible.""")
+        print("⚠️  Warning: No 'Staging' model found. Training is still possible.")
 except Exception as e:
-    print(f"""⚠️  Warning: Could not load 'Staging' model. 
-          Training is still possible. Error: {e}""")
-    obj_mlmodel = MLModel(client=client)  # Create an empty MLModel instance
+    print(f"⚠️  Warning: Could not load 'Staging' model. Error: {e}")
+    obj_mlmodel = MLModel(client=client)
 
-# Define prediction input and file upload
+# API Models
 predict_model = api.model('PredictModel', {
-    'inference_row': fields.List(fields.Raw, required=True, 
-                                 description='A row of data for inference')
+    'inference_row': fields.List(fields.Raw, required=True,
+                                 description='Input data row for prediction')
 })
 
 file_upload = api.parser()
 file_upload.add_argument('file', location='files',
                          type=FileStorage, required=True,
-                         help='CSV file for training')
+                         help='CSV training data file')
 
-ns = api.namespace('model', description='Model operations')
+ns = api.namespace('model', description='Model training and prediction operations')
 
 @ns.route('/train')
 class Train(Resource):
     @ns.expect(file_upload)
     def post(self):
-        """Endpoint to train, log, and register a model."""
+        """Train and register new model version.
+        
+        Processes uploaded CSV data, trains model, logs metrics to MLflow,
+        and transitions new model version to Staging.
+        
+        Returns:
+            tuple: Response JSON with training results (200),
+            error messages with appropriate status codes (400, 500)
+        """
         args = file_upload.parse_args()
         uploaded_file = args['file']
         
         if os.path.splitext(uploaded_file.filename)[1] != '.csv':
             return {'error': 'Invalid file type'}, 400
         
-        data_path = 'temp_crop_data.csv'
-        uploaded_file.save(data_path)
-        
         try:
-            # Set a unique name for the training run based on timestamp
+            data_path = 'temp_crop_data.csv'
+            uploaded_file.save(data_path)
             run_name = f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            model_name = "RandomForest"  # Name of your registered model            
+            model_name = "RandomForest"
             
             with mlflow.start_run(run_name=run_name) as run:
-                # Load and preprocess data
                 df = pd.read_csv(data_path)
-                input_example = df.drop(columns="label").iloc[:1]  # Use a single row as an example
+                input_example = df.drop(columns="label").iloc[:1]
                 signature = mlflow.models.infer_signature(df.drop(columns="label"), df["label"])
+                
                 df = obj_mlmodel.preprocessing_pipeline(df)
+                mlflow.log_artifact(data_path, "datasets")
                 
-                # Log dataset to MLflow
-                mlflow.log_artifact(data_path, artifact_path="datasets")            
-            
-                train_accuracy, test_accuracy, rf = obj_mlmodel.train_and_save_model(df)
+                train_acc, test_acc, model = obj_mlmodel.train_and_save_model(df)
                 
-                # Log metrics to MLflow
-                mlflow.log_metric("train_accuracy", train_accuracy)
-                mlflow.log_metric("test_accuracy", test_accuracy)
+                mlflow.log_metrics({
+                    "train_accuracy": train_acc,
+                    "test_accuracy": test_acc
+                })
 
-                # Log the trained model with input example and signature
                 mlflow.sklearn.log_model(
-                    sk_model=rf, 
+                    sk_model=model, 
                     artifact_path="model", 
                     input_example=input_example, 
                     signature=signature
                 )
                 
-                # Register the model in the MLflow Model Registry
                 model_uri = f"runs:/{run.info.run_id}/model"
-                registered_model_version = mlflow.register_model(model_uri=model_uri, name=model_name)
+                model_version = mlflow.register_model(model_uri, model_name)
                 
-                # Transition model version to "Staging"
-                mlflow_client = mlflow.tracking.MlflowClient()
-                mlflow_client.transition_model_version_stage(
+                client.transition_model_version_stage(
                     name=model_name,
-                    version=registered_model_version.version,
-                    stage="Staging" # or Production
-                )                
+                    version=model_version.version,
+                    stage="Staging"
+                )
                 
-                # Clean up the temporary data file
                 os.remove(data_path)
-
-                return {'message': 'Model Trained and Transitioned to Staging Successfully', 
-                        'train_accuracy': train_accuracy, 
-                        'test_accuracy': test_accuracy}, 200
+                return {
+                    'message': 'Model trained and deployed to Staging',
+                    'train_accuracy': train_acc,
+                    'test_accuracy': test_acc
+                }, 200
+                
         except MlflowException as mfe:
-            return {'message': 'MLflow Error', 'error': str(mfe)}, 500
+            return {'message': 'MLflow operation failed', 'error': str(mfe)}, 500
         except Exception as e:
-            return {'message': 'Internal Server Error', 'error': str(e)}, 500
-        
+            return {'message': 'Training process failed', 'error': str(e)}, 500
+
 @ns.route('/predict')
 class Predict(Resource):
     @api.expect(predict_model)
     def post(self):
-        """Endpoint to make a prediction using the latest loaded model."""
+        """Make prediction using current staging model.
+        
+        Requires:
+            JSON payload with 'inference_row' containing input features
+            
+        Returns:
+            tuple: Prediction result (200),
+            error messages with appropriate status codes (400, 500)
+        """
         try:
             data = request.get_json()
             if 'inference_row' not in data:
-                return {'error': 'No inference_row found'}, 400
-            
-            infer_array = data['inference_row']
-            if len(infer_array) == 0:
-                return {'error': """inference_row is empty"""}, 400
-            
-            if obj_mlmodel.model is None:
-                return {'error': """No staging model is loaded. 
-                        Train a model first."""}, 40
+                return {'error': 'Missing required inference_row'}, 400
                 
-            # Set a unique name for the inference run based on timestamp
+            if not data['inference_row']:
+                return {'error': 'Empty inference_row'}, 400
+                
+            if not obj_mlmodel.model:
+                return {'error': 'No deployed model available'}, 404
+                
             run_name = f"inference_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            with mlflow.start_run(run_name=run_name) as run:
-                y_pred = obj_mlmodel.predict(infer_array)
+            with mlflow.start_run(run_name=run_name):
+                prediction = obj_mlmodel.predict(data['inference_row'])
+                mlflow.log_params({
+                    "input": data['inference_row'],
+                    "output": prediction
+                })
                 
-                # Log input and output of inference to MLflow
-                mlflow.log_param("inference_input", infer_array)
-                mlflow.log_param("inference_output", y_pred)
+            return {'prediction': str(prediction)}, 200
             
-            return {'message': 'Inference Successful', 'prediction': str(y_pred)}, 200
         except Exception as e:
-            return {'message': 'Internal Server Error', 'error': str(e)}, 500
-    
-if __name__ == '__main__':
-    print("Flask app is starting...")
-    app.run(host='0.0.0.0', port=8080, debug=False)
+            return {'message': 'Prediction failed', 'error': str(e)}, 500
 
-# mlflow ui --host 0.0.0.0 --port 5102
-# http://localhost:5102/
-# python app.py
-# http://127.0.0.1:8080/
+if __name__ == '__main__':
+    """Start Flask development server.
+    
+    Configures:
+        Host: 0.0.0.0 (public access)
+        Port: 8080
+        Debug mode: Off (production setting)
+    """
+    print("Starting model service...")
+    app.run(host='0.0.0.0', port=8080, debug=False)

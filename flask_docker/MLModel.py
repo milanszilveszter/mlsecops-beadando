@@ -20,26 +20,14 @@ import os
 class MLModel:
     def __init__(self, client):
         """
-        Initialize the MLModel with the given MLflow client and 
-        load the staging model if available.
+        Initialize the MLModel with an MLflow client and attempt to load the latest staging model.
 
         Parameters:
-            client (MlflowClient): The MLflow client used to 
-            interact with the MLflow registry.
+            client (MlflowClient): The MLflow client instance used to interact with the MLflow model registry.
 
         Attributes:
-            model (object): The loaded model, or None if no model 
-                is loaded.
-            fill_values_nominal (dict): Dictionary of fill values 
-                for nominal columns.
-            fill_values_discrete (dict): Dictionary of fill values 
-                for discrete columns.
-            fill_values_continuous (dict): Dictionary of fill values 
-                for continuous columns.
-            min_max_scaler_dict (dict): Dictionary of MinMaxScaler objects 
-                for continuous columns.
-            onehot_encoders (dict): Dictionary of OneHotEncoder objects 
-                for nominal columns.
+            model (object or None): The loaded ML model, if available.
+            standard_scaler_dict (dict or None): Dictionary of StandardScaler objects for continuous columns.
         """
         self.client = client
         self.model = None
@@ -48,11 +36,10 @@ class MLModel:
 
     def load_staging_model(self):
         """
-        Load the latest model tagged with 'Staging' stage from MLflow 
-        if available.
-        
-        If a model with the 'Staging' tag exists, it loads the model 
-        and associated artifacts. Otherwise, prints a warning.
+        Load the latest model version tagged as 'Staging' from the MLflow registry.
+
+        If a staging model exists, loads the model and its associated artifacts.
+        Prints a warning if no staging model is found.
 
         Returns:
             None
@@ -83,12 +70,10 @@ class MLModel:
 
     def load_artifacts(self, artifact_uri):
         """
-        Load necessary artifacts (e.g., scalers, encoders) from the given 
-        artifact URI.
+        Load necessary artifacts (e.g., scalers, encoders) from the specified artifact URI.
 
         Parameters:
-            artifact_uri (str): The URI of the artifact directory containing 
-            necessary files.
+            artifact_uri (str): The URI of the artifact directory containing required files.
 
         Returns:
             None
@@ -107,26 +92,17 @@ class MLModel:
     
     def predict(self, inference_row):
         """
-        Predicts the outcome based on the input data row.
+        Generate a prediction for a single input row using the loaded model.
 
-        This method applies the preprocessing pipeline to the input data, performs necessary
-        transformations, and uses the preloaded model to make a prediction. The 'V24' column
-        is removed from the data frame as part of the preprocessing steps. If an error occurs
-        during the prediction process, it catches the exception and returns a JSON object with
-        the error message and a 500 status code.
+        This method preprocesses the input, applies the trained model, and returns the prediction.
+        Handles errors gracefully and returns a JSON error response if prediction fails.
 
         Parameters:
-        - inference_row: A single row of input data meant for prediction. Expected to be a list or
-        a series that matches the format and order expected by the preprocessing pipeline and model.
+            inference_row (list or pd.Series): The input data for prediction. Must match the expected feature order.
 
         Returns:
-        - On success: Returns the prediction as an integer.
-        - On failure: Returns a JSON response object with an error message and a 500 status code.
-
-        Notes:
-        - Ensure that the input data row is in the correct format and contains the expected features
-        excluding 'V24', which is not required and will be removed during preprocessing.
-        - The method is wrapped in a try-except block to handle unexpected errors during prediction.
+            str: The model's prediction as a string if successful.
+            Response: A Flask JSON response with error details and status code 500 if prediction fails.
         """
         try:
             infer_array = pd.Series(inference_row, dtype=str)
@@ -144,16 +120,17 @@ class MLModel:
                         'error': str(e)}), 500
             
     def preprocessing_pipeline(self, df):
-        """Preprocess the data to handle missing values,
-        create new features, encode categorical features, 
-        and normalize the data using min max scaling.
-        Returns the preprocessed dataframe.
-        
-        Keyword arguments:
-        df -- DataFrame with the data
+        """
+        Preprocess the input DataFrame for training.
+
+        Handles missing values, feature creation, categorical encoding, and normalization using StandardScaler.
+        Saves the fitted scalers as artifacts for later use.
+
+        Parameters:
+            df (pd.DataFrame): The raw input data.
 
         Returns:
-        df -- DataFrame with the preprocessed data
+            pd.DataFrame: The preprocessed DataFrame ready for model training.
         """
         list_column_names = ["V" + str(i) for i in range(1, 9)]
         df.columns = list_column_names
@@ -188,17 +165,18 @@ class MLModel:
         return df
     
     def preprocessing_pipeline_inference(self, sample_data):
-        """Preprocess the inference row to match
-        the features we created for training data.
-        Returns the preprocessed dataframe for inference.
-        
-        Keyword arguments:
-        sample_data -- Pandas series with the inference data
+        """
+        Preprocess a single inference row to match the training data's feature transformations.
+
+        Converts data types and applies the stored StandardScaler transformations.
+        Drops the 'V8' column if present.
+
+        Parameters:
+            sample_data (pd.DataFrame): The input data for inference.
 
         Returns:
-        input_df -- DataFrame with the preprocessed inference data
+            pd.DataFrame: The preprocessed inference data.
         """
-        
         for col in CONTINOUS_COLUMNS:  
             sample_data[col] = pd.to_numeric(sample_data[col], errors='coerce')
             sample_data[col] = sample_data[col].astype(float) 
@@ -214,16 +192,16 @@ class MLModel:
     
     def get_accuracy(self, X_train, X_test, y_train, y_test):
         """
-        Calculate and print the accuracy of the model on both the training and test data sets.
-        
-        Args:
-            X_train: Features for the training set.
-            X_test: Features for the test set.
-            y_train: Actual labels for the training set.
-            y_test: Actual labels for the test set.
+        Calculate and print the accuracy of the model on both training and test datasets.
+
+        Parameters:
+            X_train (pd.DataFrame): Training features.
+            X_test (pd.DataFrame): Test features.
+            y_train (pd.Series): Training labels.
+            y_test (pd.Series): Test labels.
 
         Returns:
-            A tuple containing the training accuracy and the test accuracy.
+            tuple: (train_accuracy, test_accuracy)
         """
         y_train_pred = self.model.predict(X_train)
 
@@ -239,14 +217,14 @@ class MLModel:
     
     def get_accuracy_full(self, X, y):
         """
-        Calculate and print the overall accuracy of the model using a data set.
+        Calculate and print the accuracy of the model on the provided dataset.
 
-        Args:
-            X: Features for the data set.
-            y: Actual labels for the data set.
+        Parameters:
+            X (pd.DataFrame): Features.
+            y (pd.Series): Labels.
 
         Returns:
-            The accuracy of the model on the provided data set.
+            float: The accuracy score.
         """
         y_pred = self.model.predict(X)
 
@@ -257,15 +235,16 @@ class MLModel:
         return accuracy
 
     def train_and_save_model(self, df):
-        """Train the model and save it to a file. 
-        Returns the train and test accuracy.
-        
-        Keyword arguments:
-        df -- DataFrame with the preprocessed data
+        """
+        Train a RandomForestClassifier on the provided DataFrame and return accuracy metrics.
+
+        Splits the data into training and test sets, fits the model, and updates the internal model attribute.
+
+        Parameters:
+            df (pd.DataFrame): The preprocessed data including features and target.
 
         Returns:
-        train_accuracy -- Accuracy of the model on the training set
-        test_accuracy -- Accuracy of the model on the test set
+            tuple: (train_accuracy, test_accuracy, trained_model)
         """
         y = df["V8"]
         X = df.drop(columns="V8")
